@@ -34,6 +34,8 @@ motifs_parser.add_argument("-n", "--max_seqlets", type=int, required=True,
 	help="The maximum number of seqlets per metacluster.")
 motifs_parser.add_argument("-l", "--n_leiden", type=int, default=2,
 	help="The number of Leiden clusterings to perform with different random seeds.")
+motifs_parser.add_argument("--n_leiden_jobs", type=int, default=1,
+	help="Run the Leiden clusterings in up to this many processes. The result does not depend on it.")
 motifs_parser.add_argument("-w", "--window", type=int, default=400,
 	help="The window surrounding the peak center that will be considered for motif discovery.")
 motifs_parser.add_argument("-z", "--size", type=int, default=20,
@@ -234,6 +236,7 @@ if args.cmd == "motifs":
 		final_flank_to_add=args.final_flank_to_add,
 		target_seqlet_fdr=0.05,
 		n_leiden_runs=args.n_leiden,
+		n_leiden_jobs=args.n_leiden_jobs,
 		verbose=args.verbose)
 
 	modiscolite.io.save_hdf5(args.output, pos_patterns, neg_patterns, args.window)

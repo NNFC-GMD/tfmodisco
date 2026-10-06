@@ -119,7 +119,7 @@ class SeqletSet():
 		self.subclusters = None
 		self.subcluster_to_subpattern = None
 
-	def compute_subpatterns(self, perplexity, n_seeds, n_iterations=-1):
+	def compute_subpatterns(self, perplexity, n_seeds, n_iterations=-1, n_jobs=1):
 		#this method assumes all the seqlets have been expanded so they
 		# all start at 0
 		X = util.get_2d_data_from_patterns(self.seqlets)[0]
@@ -151,7 +151,7 @@ class SeqletSet():
 
 		#Do Leiden clustering
 		self.subclusters = cluster.LeidenCluster(sp_density_adapted_affmat,
-			n_seeds=n_seeds, n_leiden_iterations=n_iterations) 
+			n_seeds=n_seeds, n_leiden_iterations=n_iterations, n_jobs=n_jobs) 
 
 		#this method assumes all the seqlets have been expanded so they
 		# all start at 0

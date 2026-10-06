@@ -162,7 +162,7 @@ def seqlets_to_patterns(seqlets, track_set, track_signs=None,
 	prob_and_pertrack_sim_dealbreaker_thresholds=[(0.4, 0.75), (0.2,0.8), (0.1, 0.85), (0.0,0.9)],
 	subcluster_perplexity=50, merging_max_seqlets_subsample=1000,
 	final_min_cluster_size=20,min_ic_in_window=0.6, min_ic_windowsize=6,
-	ppm_pseudocount=0.001):
+	ppm_pseudocount=0.001, n_leiden_jobs=1):
 
 	bg_freq = np.mean([seqlet.sequence for seqlet in seqlets], axis=(0, 1)) 
 
@@ -208,7 +208,8 @@ def seqlets_to_patterns(seqlets, track_set, track_signs=None,
 		cluster_indices = cluster.LeidenCluster(
 			csr_density_adapted_affmat,
 			n_seeds=n_leiden_runs,
-			n_leiden_iterations=n_leiden_iterations)
+			n_leiden_iterations=n_leiden_iterations,
+			n_jobs=n_leiden_jobs)
 
 		del csr_density_adapted_affmat
 
@@ -239,7 +240,7 @@ def seqlets_to_patterns(seqlets, track_set, track_signs=None,
 		flank_to_add=initial_flank_to_add,
 		window_size=trim_to_window_size, bg_freq=bg_freq,
 		max_seqlets_subsample=merging_max_seqlets_subsample,
-		n_seeds=n_leiden_runs)
+		n_seeds=n_leiden_runs, n_jobs=n_leiden_jobs)
 
 	#Now start merging patterns 
 	merged_patterns = sorted(merged_patterns, key=lambda x: -len(x.seqlets))
@@ -256,7 +257,8 @@ def seqlets_to_patterns(seqlets, track_set, track_signs=None,
 			right_flank_to_add=final_flank_to_add)
 
 		pattern.compute_subpatterns(subcluster_perplexity, 
-			n_seeds=n_leiden_runs, n_iterations=n_leiden_iterations)
+			n_seeds=n_leiden_runs, n_iterations=n_leiden_iterations,
+			n_jobs=n_leiden_jobs)
 		
 		patterns[patternidx] = pattern
 
@@ -276,7 +278,7 @@ def TFMoDISco(one_hot, hypothetical_contribs, sliding_window_size=21,
 	prob_and_pertrack_sim_dealbreaker_thresholds=[(0.4, 0.75), (0.2,0.8), (0.1, 0.85), (0.0,0.9)],
 	subcluster_perplexity=50, merging_max_seqlets_subsample=1000,
 	final_min_cluster_size=20, min_ic_in_window=0.6, min_ic_windowsize=6,
-	ppm_pseudocount=0.001, verbose=False):
+	ppm_pseudocount=0.001, verbose=False, n_leiden_jobs=1):
 
 	contrib_scores = np.multiply(one_hot, hypothetical_contribs)
 
@@ -334,7 +336,8 @@ def TFMoDISco(one_hot, hypothetical_contribs, sliding_window_size=21,
 			final_min_cluster_size=final_min_cluster_size,
 			min_ic_in_window=min_ic_in_window,
 			min_ic_windowsize=min_ic_windowsize,
-			ppm_pseudocount=ppm_pseudocount)
+			ppm_pseudocount=ppm_pseudocount,
+			n_leiden_jobs=n_leiden_jobs)
 	else:
 		pos_patterns = None
 
@@ -364,7 +367,8 @@ def TFMoDISco(one_hot, hypothetical_contribs, sliding_window_size=21,
 			final_min_cluster_size=final_min_cluster_size,
 			min_ic_in_window=min_ic_in_window,
 			min_ic_windowsize=min_ic_windowsize,
-			ppm_pseudocount=ppm_pseudocount)
+			ppm_pseudocount=ppm_pseudocount,
+			n_leiden_jobs=n_leiden_jobs)
 	else:
 		neg_patterns = None
 

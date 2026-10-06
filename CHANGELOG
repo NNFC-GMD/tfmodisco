@@ -2,6 +2,32 @@
 Release History
 ===============
 
+NNFC-GMD fork: parallel Leiden restarts
+=======================================
+
+cluster.py
+----------
+
+	- `LeidenCluster` takes `n_jobs`. With n_jobs > 1 and at least
+	`PARALLEL_MIN_EDGES` (1,000,000) stored entries in the affinity matrix,
+	the `n_seeds` restarts run in up to n_jobs worker processes instead of one
+	after another. Each restart is seeded and independent, and the best is
+	still chosen in seed order (the lowest seed wins a tie), so the clustering
+	is identical to 2.5.2's for any n_jobs; tests/test_cluster.py checks it
+	against 2.5.2's function verbatim. The workers are fresh interpreters, not
+	forks (numba's thread pool is running by then), load cluster.py by path
+	rather than importing the package, and read the matrix from TMPDIR.
+	- On a 20,000-seqlet, 500-neighbour affinity (15.9M entries) one call at
+	two restarts took 151 s in process and 84 s with n_jobs=2.
+
+modisco, tfmodisco.py, aggregator.py, core.py
+---------------------------------------------
+
+	- `modisco motifs --n_leiden_jobs N` (default 1) and `TFMoDISco(...,
+	n_leiden_jobs=1)` pass n_jobs to every Leiden call: the two clustering
+	rounds, the spurious-merging check and the final subclustering.
+
+
 Version 2.5.2
 ==============
 
