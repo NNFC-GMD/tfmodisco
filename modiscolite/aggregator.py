@@ -9,7 +9,19 @@ from . import core
 from . import util
 
 from collections import OrderedDict
+from concurrent.futures import ThreadPoolExecutor
 from sklearn.metrics import roc_auc_score
+
+
+def _pair_auroc(between_pattern_sims, within_pattern1_sims):
+	# Arrays rather than the lists 2.5.2 built element by element: the same
+	# dtypes (int64 labels, the jaccard scores' float dtype) and order, so
+	# roc_auc_score gets the same input and returns the same value; it just
+	# no longer converts two ~10**6-element Python lists on every pair.
+	y_true = np.concatenate([np.zeros(len(between_pattern_sims), dtype=np.int64),
+		np.ones(len(within_pattern1_sims), dtype=np.int64)])
+	y_score = np.concatenate([between_pattern_sims, within_pattern1_sims])
+	return roc_auc_score(y_true=y_true, y_score=y_score)
 
 
 def polish_pattern(pattern, min_frac, min_num, track_set, flank, window_size, bg_freq):
@@ -173,7 +185,7 @@ def _detect_spurious_merging(patterns, track_set, perplexity,
 	min_in_subcluster, min_overlap, prob_and_pertrack_sim_merge_thresholds,
 	prob_and_pertrack_sim_dealbreaker_thresholds,
 	min_frac, min_num, flank_to_add, window_size, bg_freq,
-	n_seeds, max_seqlets_subsample=1000, n_jobs=1):
+	n_seeds, max_seqlets_subsample=1000, n_jobs=1, n_merge_threads=1):
 
 	to_return = []
 	for i, pattern in enumerate(patterns):
@@ -187,7 +199,8 @@ def _detect_spurious_merging(patterns, track_set, perplexity,
 				prob_and_pertrack_sim_merge_thresholds=prob_and_pertrack_sim_merge_thresholds,
 				prob_and_pertrack_sim_dealbreaker_thresholds=prob_and_pertrack_sim_dealbreaker_thresholds,
 				min_frac=min_frac, min_num=min_num, flank_to_add=flank_to_add, window_size=window_size, 
-				bg_freq=bg_freq, max_seqlets_subsample=max_seqlets_subsample)
+				bg_freq=bg_freq, max_seqlets_subsample=max_seqlets_subsample,
+				n_threads=n_merge_threads)
 
 			to_return.extend(refined_subpatterns[0]) 
 		else:
@@ -198,13 +211,20 @@ def _detect_spurious_merging(patterns, track_set, perplexity,
 				prob_and_pertrack_sim_merge_thresholds=prob_and_pertrack_sim_merge_thresholds,
 				prob_and_pertrack_sim_dealbreaker_thresholds=prob_and_pertrack_sim_dealbreaker_thresholds,
 				min_frac=min_frac, min_num=min_num, flank_to_add=flank_to_add, window_size=window_size, 
-				bg_freq=bg_freq, max_seqlets_subsample=max_seqlets_subsample)
+				bg_freq=bg_freq, max_seqlets_subsample=max_seqlets_subsample,
+				n_threads=n_merge_threads)
 
 def SimilarPatternsCollapser(patterns, track_set,
 	min_overlap, prob_and_pertrack_sim_merge_thresholds,
 	prob_and_pertrack_sim_dealbreaker_thresholds,
 	min_frac, min_num, flank_to_add, window_size, bg_freq,
-	max_seqlets_subsample=1000):
+	max_seqlets_subsample=1000, n_threads=1):
+	"""n_threads > 1 computes the pairwise AUROCs (sklearn's roc_auc_score,
+	most of this function's time) in that many threads, while the main thread
+	aligns the next pairs and computes their jaccard scores; each AUROC goes
+	back into its own (i, j) cell, so the matrix, and every merge decided from
+	it, is the same as with one thread. Pattern i's own data and within-pattern
+	scores are computed once per pass instead of once per partner j."""
 	patterns = [x.copy() for x in patterns]
 
 	merge_hierarchy_levels = []        
@@ -236,6 +256,15 @@ def SimilarPatternsCollapser(patterns, track_set,
 			subsample_patterns.append(pattern)
 
 		n = len(patterns)
+		within_cache = {}
+		pending = []
+		executor = ThreadPoolExecutor(max_workers=n_threads) if n_threads > 1 else None
+
+		def collect(keep):
+			while len(pending) > keep:
+				i_, j_, future = pending.pop(0)
+				pairwise_aurocs[i_, j_] = future.result()
+
 		for i in range(n):
 			for j in range(n):
 				#Note: I compute both i,j AND j,i because although
@@ -282,15 +311,21 @@ def SimilarPatternsCollapser(patterns, track_set,
 				pattern2_shifted_seqlets = track_set.create_seqlets(
 					seqlets=pattern2_coords)
 
-				pattern1_fwdseqdata, _ =\
-				  util.get_2d_data_from_patterns(subsample_patterns[i].seqlets)
+				if i not in within_cache:
+					pattern1_fwdseqdata, _ =\
+					  util.get_2d_data_from_patterns(subsample_patterns[i].seqlets)
+					flat_pattern1_fwdseqdata = pattern1_fwdseqdata.reshape(
+						(len(pattern1_fwdseqdata), -1))
+					within_pattern1_sims = affinitymat.jaccard(
+						flat_pattern1_fwdseqdata[:, :, None], 
+						flat_pattern1_fwdseqdata[:, :, None])[:, :, 0].flatten()
+					within_cache[i] = (flat_pattern1_fwdseqdata, within_pattern1_sims)
+				flat_pattern1_fwdseqdata, within_pattern1_sims = within_cache[i]
 
 				pattern2_fwdseqdata, _ =\
 				  util.get_2d_data_from_patterns(pattern2_shifted_seqlets)
 
 				#Flatten, compute continjacc sim at this alignment
-				flat_pattern1_fwdseqdata = pattern1_fwdseqdata.reshape(
-					(len(pattern1_fwdseqdata), -1))
 				flat_pattern2_fwdseqdata = pattern2_fwdseqdata.reshape(
 					(len(pattern2_fwdseqdata), -1))
 
@@ -298,18 +333,17 @@ def SimilarPatternsCollapser(patterns, track_set,
 					flat_pattern1_fwdseqdata[:, :, None], 
 					flat_pattern2_fwdseqdata[:, :, None])[:, :, 0].flatten()
 
-				within_pattern1_sims = affinitymat.jaccard(
-					flat_pattern1_fwdseqdata[:, :, None], 
-					flat_pattern1_fwdseqdata[:, :, None])[:, :, 0].flatten()
-
-				auroc = roc_auc_score(
-					y_true=[0 for x in between_pattern_sims]
-						   +[1 for x in within_pattern1_sims],
-					y_score=list(between_pattern_sims)
-							+list(within_pattern1_sims))
-
 				#The symmetrization over i,j and j,i is done later
-				pairwise_aurocs[i,j] = auroc
+				if executor is None:
+					pairwise_aurocs[i,j] = _pair_auroc(between_pattern_sims, within_pattern1_sims)
+				else:
+					pending.append((i, j, executor.submit(_pair_auroc,
+						between_pattern_sims, within_pattern1_sims)))
+					collect(4 * n_threads)
+
+		collect(0)
+		if executor is not None:
+			executor.shutdown()
 
 
 		#pairwise_sims is not symmetric; differ based on which pattern is

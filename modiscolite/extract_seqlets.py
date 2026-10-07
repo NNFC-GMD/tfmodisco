@@ -170,8 +170,10 @@ def extract_seqlets(attribution_scores, window_size, flank, suppress,
 		  min_passing_windows_frac=min_passing_windows_frac,
 		  max_passing_windows_frac=max_passing_windows_frac) 
 
-	distribution = np.array(sorted(np.abs(np.concatenate(smoothed_tracks,
-		axis=0))))
+	# np.sort, not sorted(): the same ascending float32 array, without making a
+	# Python float of each of the ~10**8 values (131 s + 25 s on 291,194
+	# regions x 500 bp; tests/test_extract_seqlets.py checks they are equal).
+	distribution = np.sort(np.abs(np.concatenate(smoothed_tracks, axis=0)))
 
 	transformed_pos_threshold = np.sign(pos_threshold)*np.searchsorted(
 		a=distribution, v=abs(pos_threshold))/len(distribution)

@@ -64,6 +64,131 @@ def _sparse_mm_dot(X_data, X_indices, X_indptr, Y_data, Y_indices, Y_indptr, k):
 
 	return sims, neighbors
 
+@njit(parallel=True)
+def _indexed_topk(X_data, X_indices, X_indptr, XT_data, XT_rows, XT_indptr,
+	YT_data, YT_rows, YT_indptr, n_rows, k, n_blocks):
+	"""_sparse_mm_dot's result, from an inverted index instead of all pairs.
+
+	For row i, every row j sharing a gapped k-mer f with it gets
+	X[i, f] * X[j, f] (and X[i, f] * Y[j, f]) added, f in increasing order:
+	the products _sparse_vv_dot's merge adds, in the order it adds them, so
+	each dot product is bit-identical; rows sharing no k-mer stay at exactly
+	0.0 without being visited. The top k are then ordered as
+	np.argsort(-dot, kind='mergesort') orders the full row: positive dots by
+	value (ties by index), then the zero dots by index, then the negative ones.
+	"""
+
+	neighbors = np.empty((n_rows, k), dtype='int32')
+	sims = np.empty((n_rows, k), dtype='float64')
+	block = (n_rows + n_blocks - 1) // n_blocks
+
+	for b in prange(n_blocks):
+		start = b * block
+		end = min(n_rows, start + block)
+		xacc = np.zeros(n_rows, dtype='float64')
+		yacc = np.zeros(n_rows, dtype='float64')
+		touched = np.zeros(n_rows, dtype=np.bool_)
+		hits = np.empty(n_rows, dtype='int64')
+
+		for i in range(start, end):
+			n_hits = 0
+			for xi in range(X_indptr[i], X_indptr[i+1]):
+				f = X_indices[xi]
+				a = X_data[xi]
+				for t in range(XT_indptr[f], XT_indptr[f+1]):
+					j = XT_rows[t]
+					xacc[j] += a * XT_data[t]
+					if not touched[j]:
+						touched[j] = True
+						hits[n_hits] = j
+						n_hits += 1
+				for t in range(YT_indptr[f], YT_indptr[f+1]):
+					j = YT_rows[t]
+					yacc[j] += a * YT_data[t]
+					if not touched[j]:
+						touched[j] = True
+						hits[n_hits] = j
+						n_hits += 1
+
+			js = np.sort(hits[:n_hits])
+			d = np.empty(n_hits, dtype='float64')
+			for h in range(n_hits):
+				j = js[h]
+				d[h] = max(xacc[j], yacc[j])
+
+			# positive dots, by value then index (js is in index order and
+			# the sort is stable)
+			pos = np.where(d > 0)[0]
+			order = pos[np.argsort(-d[pos], kind='mergesort')]
+			n_out = 0
+			for h in order[:k]:
+				neighbors[i, n_out] = js[h]
+				sims[i, n_out] = d[h]
+				n_out += 1
+
+			# then the zero dots, visited or not, by index
+			j = 0
+			while n_out < k and j < n_rows:
+				if touched[j]:
+					v = max(xacc[j], yacc[j])
+					if v == 0:
+						neighbors[i, n_out] = j
+						sims[i, n_out] = v
+						n_out += 1
+				else:
+					neighbors[i, n_out] = j
+					sims[i, n_out] = 0.0
+					n_out += 1
+				j += 1
+
+			# then the negative dots, closest to zero first
+			if n_out < k:
+				neg = np.where(d < 0)[0]
+				order = neg[np.argsort(-d[neg], kind='mergesort')]
+				for h in order[:k - n_out]:
+					neighbors[i, n_out] = js[h]
+					sims[i, n_out] = d[h]
+					n_out += 1
+
+			for h in range(n_hits):
+				j = hits[h]
+				xacc[j] = 0.0
+				yacc[j] = 0.0
+				touched[j] = False
+
+	return sims, neighbors
+
+
+def _sparse_mm_dot_indexed(X, Y, k):
+	"""_sparse_mm_dot(X.data, X.indices, X.indptr, Y.data, Y.indices,
+	Y.indptr, k), computed through an inverted index (see _indexed_topk).
+
+	The gapped k-mer matrices are 5**max_len columns wide, so the columns in
+	use are renumbered first; the renumbering keeps their order, and with it
+	the order the products are added in. _sparse_vv_dot's merge assumes each
+	row's columns are sorted; if they are not, the original is used.
+	"""
+
+	if not (X.has_sorted_indices and Y.has_sorted_indices):
+		return _sparse_mm_dot(X.data, X.indices.astype('int64'), X.indptr.astype('int64'),
+			Y.data, Y.indices.astype('int64'), Y.indptr.astype('int64'), k)
+
+	n = X.shape[0]
+	cols, inverse = np.unique(np.concatenate([X.indices, Y.indices]), return_inverse=True)
+	Xr = scipy.sparse.csr_matrix((X.data, inverse[:len(X.indices)], X.indptr), shape=(n, len(cols)))
+	Yr = scipy.sparse.csr_matrix((Y.data, inverse[len(X.indices):], Y.indptr), shape=(n, len(cols)))
+	XT = Xr.tocsc()
+	YT = Yr.tocsc()
+	XT.sort_indices()
+	YT.sort_indices()
+
+	n_blocks = min(n, 1024)
+	return _indexed_topk(Xr.data.astype('float64'), Xr.indices.astype('int64'), Xr.indptr.astype('int64'),
+		XT.data.astype('float64'), XT.indices.astype('int64'), XT.indptr.astype('int64'),
+		YT.data.astype('float64'), YT.indices.astype('int64'), YT.indptr.astype('int64'),
+		n, k, n_blocks)
+
+
 def cosine_similarity_from_seqlets(seqlets, n_neighbors, sign, topn=20, 
 	min_k=4, max_k=6, max_gap=15, max_len=15, max_entries=500, 
 	alphabet_size=4):
@@ -79,7 +204,7 @@ def cosine_similarity_from_seqlets(seqlets, n_neighbors, sign, topn=20,
 
 	n, d = X.shape
 	k = min(n_neighbors+1, n)
-	return _sparse_mm_dot(X.data, X.indices, X.indptr, Y.data, Y.indices, Y.indptr, k)
+	return _sparse_mm_dot_indexed(X, Y, k)
 
 
 def jaccard_from_seqlets(seqlets, min_overlap, filter_seqlets=None, 

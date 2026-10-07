@@ -2,6 +2,45 @@
 Release History
 ===============
 
+NNFC-GMD fork: faster modisco motifs, same results
+==================================================
+
+Profiled on 291,194 regions of real ChromBPNet scores (`modisco motifs -n
+25000`, 16 threads): 42.9 min before, 17.6 min after, results file identical
+bit for bit (also -n 50000 with the first change: 70.0 -> 44.8 min, identical).
+
+affinitymat.py
+--------------
+
+	- The coarse neighbour search (`cosine_similarity_from_seqlets`) compared
+	every seqlet's gapped k-mer vector with every other's: quadratic, 10.5 of
+	42.9 min at 25,000 seqlets and 30.8 of 70.0 at 50,000. It now walks an
+	inverted index (k-mer -> seqlets) and only visits pairs that share a
+	k-mer, adding the same products in the same order, so every dot product
+	is bit-identical, and orders the top k exactly as
+	np.argsort(-dot, kind='mergesort') did over the full row. 1.1 and 3.0
+	min. `_sparse_mm_dot` stays, as the reference and the fallback for rows
+	with unsorted columns.
+
+extract_seqlets.py
+------------------
+
+	- The score distribution was sorted with Python's sorted(): 131 s plus
+	25 s of conversion on ~1.4e8 values. np.sort gives the same array.
+
+aggregator.py, tfmodisco.py, modisco
+------------------------------------
+
+	- `SimilarPatternsCollapser` computes each pattern's own data and
+	within-pattern similarities once per pass instead of once per partner,
+	and passes roc_auc_score arrays instead of Python lists (same dtypes and
+	values). `--n_merge_threads N` (`TFMoDISco(..., n_merge_threads=1)`)
+	computes the pairwise AUROCs, over half of merging's time, in N threads
+	while the main thread prepares the next pairs; each AUROC is written to
+	its own cell, so the merges do not depend on N. Merging: 12.5 -> 2.6 min
+	at 25,000 seqlets with 16 threads.
+
+
 NNFC-GMD fork: parallel Leiden restarts
 =======================================
 
